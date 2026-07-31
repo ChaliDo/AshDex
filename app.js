@@ -18,6 +18,17 @@
     })[character]);
   }
 
+  function getErrorText(error) {
+    if (!error) {
+      return 'Unknown error.';
+    }
+
+    const code = error.code ? `${error.code}: ` : '';
+    const message = error.message || String(error);
+
+    return `${code}${message}`;
+  }
+
   function showFatalError(title, detail = '') {
     console.error(title, detail);
 
@@ -27,15 +38,24 @@
           src="assets/ash-pikachu-transparent.png"
           alt="Ash and Pikachu"
         >
+
         <h1>AshDex</h1>
         <p>${escapeHtml(title)}</p>
-        ${detail ? `<small>${escapeHtml(detail)}</small>` : ''}
-        <button id="retry-button" type="button">Try again</button>
+
+        ${
+          detail
+            ? `<small class="status-message">${escapeHtml(detail)}</small>`
+            : ''
+        }
+
+        <button id="fatal-retry-button" type="button">
+          Try again
+        </button>
       </main>
     `;
 
     document
-      .querySelector('#retry-button')
+      .querySelector('#fatal-retry-button')
       ?.addEventListener('click', () => window.location.reload());
   }
 
@@ -47,10 +67,9 @@
   });
 
   window.addEventListener('unhandledrejection', (event) => {
-    const reason = event.reason;
     showFatalError(
       'AshDex could not finish starting.',
-      reason?.message || String(reason || 'Unknown startup error.')
+      getErrorText(event.reason)
     );
   });
 
@@ -85,7 +104,10 @@
       firebase.initializeApp(firebaseConfig);
     }
   } catch (error) {
-    showFatalError('Firebase could not be initialized.', error.message);
+    showFatalError(
+      'Firebase could not be initialized.',
+      getErrorText(error)
+    );
     return;
   }
 
@@ -93,17 +115,32 @@
   const db = firebase.firestore();
   const provider = new firebase.auth.GoogleAuthProvider();
 
+  /*
+   * Firestore bağlantısını bazı mobil ağlar, güvenlik yazılımları,
+   * VPN'ler ve kısıtlayıcı bağlantılarla daha uyumlu hâle getirir.
+   *
+   * Bu ayar herhangi bir Firestore okuma/yazma işleminden önce yapılmalıdır.
+   */
+  try {
+    db.settings({
+      experimentalForceLongPolling: true,
+      useFetchStreams: false,
+    });
+  } catch (error) {
+    console.warn(
+      'Firestore transport settings could not be applied:',
+      error
+    );
+  }
+
   provider.setCustomParameters({
     prompt: 'select_account',
-  });
-
-  db.enablePersistence({ synchronizeTabs: true }).catch((error) => {
-    console.warn('Firestore persistence unavailable:', error.code, error.message);
   });
 
   let currentUser = null;
   let profile = null;
   let unsubscribeProfile = null;
+
   let selectedRegion = 'All';
   let searchQuery = '';
   let selectedFriend = null;
@@ -125,17 +162,6 @@
     return `ASH-${cleanUid}`;
   }
 
-  function getErrorText(error) {
-    if (!error) {
-      return 'Unknown error.';
-    }
-
-    const code = error.code ? `${error.code}: ` : '';
-    const message = error.message || String(error);
-
-    return `${code}${message}`;
-  }
-
   function countOwned(owned = {}) {
     return window.POKEMON.reduce(
       (total, pokemon) => total + (owned[pokemon.id] ? 1 : 0),
@@ -149,26 +175,64 @@
 
     if (snapshot.exists) {
       const currentData = snapshot.data() || {};
+
       const mergedOwned = {
         ...createEmptyOwned(),
         ...(currentData.owned || {}),
       };
 
-      await userRef.set(
-        {
-          displayName: currentData.displayName || user.displayName || 'Trainer',
-          photoURL: currentData.photoURL || user.photoURL || '',
-          email: user.email || currentData.email || '',
-          trainerCode:
-            currentData.trainerCode || trainerCodeFromUid(user.uid),
-          owned: mergedOwned,
-          friends: Array.isArray(currentData.friends)
-            ? currentData.friends
-            : [],
-          updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
+      const trainerCode =
+        currentData.trainerCode || trainerCodeFromUid(user.uid);
+
+      const updatedProfile = {
+        uid: user.uid,
+        displayName:
+          currentData.displayName ||
+          user.displayName ||
+          'Trainer',
+
+        photoURL:
+          currentData.photoURL ||
+          user.photoURL ||
+          '',
+
+        email:
+          user.email ||
+          currentData.email ||
+          '',
+
+        trainerCode,
+        owned: mergedOwned,
+
+        friends: Array.isArray(currentData.friends)
+          ? currentData.friends
+          : [],
+
+        updatedAt:
+          firebase.firestore.FieldValue.serverTimestamp(),
+      };
+
+      await userRef.set(updatedProfile, {
+        merge: true,
+      });
+
+      await db
+        .collection('publicProfiles')
+        .doc(trainerCode)
+        .set(
+          {
+            uid: user.uid,
+            displayName: updatedProfile.displayName,
+            photoURL: updatedProfile.photoURL,
+            trainerCode,
+            owned: mergedOwned,
+            updatedAt:
+              firebase.firestore.FieldValue.serverTimestamp(),
+          },
+          {
+            merge: true,
+          }
+        );
 
       return;
     }
@@ -183,8 +247,12 @@
       trainerCode,
       owned: createEmptyOwned(),
       friends: [],
-      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+
+      createdAt:
+        firebase.firestore.FieldValue.serverTimestamp(),
+
+      updatedAt:
+        firebase.firestore.FieldValue.serverTimestamp(),
     };
 
     await userRef.set(newProfile);
@@ -198,7 +266,9 @@
         photoURL: newProfile.photoURL,
         trainerCode,
         owned: newProfile.owned,
-        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+
+        updatedAt:
+          firebase.firestore.FieldValue.serverTimestamp(),
       });
   }
 
@@ -209,8 +279,12 @@
           src="assets/ash-pikachu-transparent.png"
           alt="Ash and Pikachu"
         >
+
         <h1>AshDex</h1>
-        <p>Cloud-synced collection and live friend lookup.</p>
+
+        <p>
+          Cloud-synced collection and live friend lookup.
+        </p>
 
         <button id="login-button" type="button">
           Continue with Google
@@ -218,7 +292,11 @@
 
         ${
           statusMessage
-            ? `<small class="status-message">${escapeHtml(statusMessage)}</small>`
+            ? `
+              <small class="status-message">
+                ${escapeHtml(statusMessage)}
+              </small>
+            `
             : ''
         }
       </main>
@@ -236,6 +314,7 @@
           src="assets/ash-pikachu-transparent.png"
           alt="Ash and Pikachu"
         >
+
         <h1>AshDex</h1>
         <p>Opening your Trainer Card…</p>
 
@@ -245,7 +324,14 @@
               <small class="status-message">
                 ${escapeHtml(statusMessage)}
               </small>
-              <button id="retry-button" type="button">Try again</button>
+
+              <button id="retry-button" type="button">
+                Try again
+              </button>
+
+              <button id="signout-retry-button" class="ghost" type="button">
+                Sign out
+              </button>
             `
             : ''
         }
@@ -255,6 +341,17 @@
     document
       .querySelector('#retry-button')
       ?.addEventListener('click', () => window.location.reload());
+
+    document
+      .querySelector('#signout-retry-button')
+      ?.addEventListener('click', async () => {
+        try {
+          await auth.signOut();
+        } catch (error) {
+          statusMessage = getErrorText(error);
+          render();
+        }
+      });
   }
 
   function pokemonCardHtml(pokemon, isOwned) {
@@ -268,7 +365,9 @@
         role="button"
         aria-pressed="${isOwned ? 'true' : 'false'}"
       >
-        <div class="check">${isOwned ? '✓' : ''}</div>
+        <div class="check">
+          ${isOwned ? '✓' : ''}
+        </div>
 
         <img
           src="assets/pokemon/${encodeURI(pokemon.image)}"
@@ -277,18 +376,26 @@
         >
 
         <small>
-          #${escapeHtml(pokemon.dex)} · ${escapeHtml(pokemon.region)}
+          #${escapeHtml(pokemon.dex)}
+          ·
+          ${escapeHtml(pokemon.region)}
         </small>
 
         <h3>${escapeHtml(pokemon.name)}</h3>
 
-        ${label ? `<span>${escapeHtml(label)}</span>` : ''}
+        ${
+          label
+            ? `<span>${escapeHtml(label)}</span>`
+            : ''
+        }
       </article>
     `;
   }
 
   function friendHtml(friendProfile) {
-    const ownedCount = countOwned(friendProfile.owned || {});
+    const friendOwned = friendProfile.owned || {};
+    const ownedCount = countOwned(friendOwned);
+
     const percentage = Math.round(
       (ownedCount / window.POKEMON.length) * 100
     );
@@ -299,13 +406,22 @@
           src="${escapeHtml(
             friendProfile.photoURL || 'assets/icon-192.png'
           )}"
-          alt="${escapeHtml(friendProfile.displayName || 'Trainer')}"
+          alt="${escapeHtml(
+            friendProfile.displayName || 'Trainer'
+          )}"
         >
 
         <div>
-          <b>${escapeHtml(friendProfile.displayName || 'Trainer')}</b>
+          <b>
+            ${escapeHtml(
+              friendProfile.displayName || 'Trainer'
+            )}
+          </b>
+
           <span>
-            ${ownedCount}/${window.POKEMON.length} · ${percentage}%
+            ${ownedCount}/${window.POKEMON.length}
+            ·
+            ${percentage}%
           </span>
         </div>
       </div>
@@ -319,17 +435,23 @@
     };
 
     const ownedCount = countOwned(owned);
+
     const percentage = Math.round(
       (ownedCount / window.POKEMON.length) * 100
     );
 
+    const normalizedSearch = searchQuery
+      .trim()
+      .toLocaleLowerCase('en');
+
     const filteredPokemon = window.POKEMON.filter((pokemon) => {
       const matchesRegion =
-        selectedRegion === 'All' || pokemon.region === selectedRegion;
+        selectedRegion === 'All' ||
+        pokemon.region === selectedRegion;
 
       const matchesSearch = pokemon.name
-        .toLowerCase()
-        .includes(searchQuery.trim().toLowerCase());
+        .toLocaleLowerCase('en')
+        .includes(normalizedSearch);
 
       return matchesRegion && matchesSearch;
     });
@@ -339,13 +461,19 @@
         <header>
           <div>
             <h1>AshDex</h1>
+
             <p>
-              ${ownedCount}/${window.POKEMON.length} collected ·
+              ${ownedCount}/${window.POKEMON.length}
+              collected ·
               ${percentage}%
             </p>
           </div>
 
-          <button id="logout-button" class="ghost" type="button">
+          <button
+            id="logout-button"
+            class="ghost"
+            type="button"
+          >
             Sign out
           </button>
         </header>
@@ -355,14 +483,25 @@
             src="${escapeHtml(
               profile.photoURL || 'assets/icon-192.png'
             )}"
-            alt="${escapeHtml(profile.displayName || 'Trainer')}"
+            alt="${escapeHtml(
+              profile.displayName || 'Trainer'
+            )}"
           >
 
           <div>
-            <b>${escapeHtml(profile.displayName || 'Trainer')}</b>
+            <b>
+              ${escapeHtml(
+                profile.displayName || 'Trainer'
+              )}
+            </b>
+
             <span>
               Trainer Code:
-              <strong>${escapeHtml(profile.trainerCode || '')}</strong>
+              <strong>
+                ${escapeHtml(
+                  profile.trainerCode || ''
+                )}
+              </strong>
             </span>
           </div>
         </section>
@@ -376,20 +515,32 @@
               type="text"
               placeholder="ASH-ABC123"
               autocomplete="off"
+              autocapitalize="characters"
             >
 
-            <button id="find-friend-button" type="button">
+            <button
+              id="find-friend-button"
+              type="button"
+            >
               Check
             </button>
           </div>
 
           ${
             statusMessage
-              ? `<p class="status-message">${escapeHtml(statusMessage)}</p>`
+              ? `
+                <p class="status-message">
+                  ${escapeHtml(statusMessage)}
+                </p>
+              `
               : ''
           }
 
-          ${selectedFriend ? friendHtml(selectedFriend) : ''}
+          ${
+            selectedFriend
+              ? friendHtml(selectedFriend)
+              : ''
+          }
         </section>
 
         <nav class="regions">
@@ -397,7 +548,11 @@
             <button
               type="button"
               data-region="${escapeHtml(regionName)}"
-              class="${regionName === selectedRegion ? 'active' : ''}"
+              class="${
+                regionName === selectedRegion
+                  ? 'active'
+                  : ''
+              }"
             >
               ${escapeHtml(regionName)}
             </button>
@@ -413,11 +568,22 @@
         >
 
         <main class="grid">
-          ${filteredPokemon
-            .map((pokemon) =>
-              pokemonCardHtml(pokemon, Boolean(owned[pokemon.id]))
-            )
-            .join('')}
+          ${
+            filteredPokemon.length
+              ? filteredPokemon
+                  .map((pokemon) =>
+                    pokemonCardHtml(
+                      pokemon,
+                      Boolean(owned[pokemon.id])
+                    )
+                  )
+                  .join('')
+              : `
+                <p class="empty-message">
+                  No Pokémon found.
+                </p>
+              `
+          }
         </main>
       </div>
     `;
@@ -465,33 +631,53 @@
         render();
       });
 
-    document.querySelectorAll('[data-region]').forEach((button) => {
-      button.addEventListener('click', () => {
-        selectedRegion = button.dataset.region;
-        render();
+    document
+      .querySelectorAll('[data-region]')
+      .forEach((button) => {
+        button.addEventListener('click', () => {
+          selectedRegion = button.dataset.region;
+          render();
+        });
       });
-    });
 
-    document.querySelectorAll('[data-pokemon-id]').forEach((card) => {
-      const toggleCard = () => togglePokemon(card.dataset.pokemonId);
+    document
+      .querySelectorAll('[data-pokemon-id]')
+      .forEach((card) => {
+        const toggleCard = () => {
+          togglePokemon(card.dataset.pokemonId);
+        };
 
-      card.addEventListener('click', toggleCard);
+        card.addEventListener('click', toggleCard);
 
-      card.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          toggleCard();
-        }
+        card.addEventListener('keydown', (event) => {
+          if (
+            event.key === 'Enter' ||
+            event.key === ' '
+          ) {
+            event.preventDefault();
+            toggleCard();
+          }
+        });
       });
-    });
 
     document
       .querySelector('#find-friend-button')
       ?.addEventListener('click', () => {
         const value =
-          document.querySelector('#friend-code-input')?.value || '';
+          document.querySelector('#friend-code-input')
+            ?.value || '';
 
         findFriend(value);
+      });
+
+    document
+      .querySelector('#friend-code-input')
+      ?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+
+          findFriend(event.target.value);
+        }
       });
   }
 
@@ -552,11 +738,15 @@
     render();
 
     try {
-      const userRef = db.collection('users').doc(currentUser.uid);
+      const userRef = db
+        .collection('users')
+        .doc(currentUser.uid);
 
       await userRef.update({
         owned: nextOwned,
-        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+
+        updatedAt:
+          firebase.firestore.FieldValue.serverTimestamp(),
       });
 
       if (profile.trainerCode) {
@@ -566,16 +756,31 @@
           .set(
             {
               uid: currentUser.uid,
-              displayName: profile.displayName || 'Trainer',
-              photoURL: profile.photoURL || '',
-              trainerCode: profile.trainerCode,
+              displayName:
+                profile.displayName || 'Trainer',
+
+              photoURL:
+                profile.photoURL || '',
+
+              trainerCode:
+                profile.trainerCode,
+
               owned: nextOwned,
-              updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+
+              updatedAt:
+                firebase.firestore.FieldValue.serverTimestamp(),
             },
-            { merge: true }
+            {
+              merge: true,
+            }
           );
       }
     } catch (error) {
+      console.error(
+        'Could not update Pokémon:',
+        error
+      );
+
       profile = previousProfile;
       statusMessage = getErrorText(error);
       render();
@@ -583,7 +788,9 @@
   }
 
   async function findFriend(rawCode) {
-    const trainerCode = rawCode.trim().toUpperCase();
+    const trainerCode = rawCode
+      .trim()
+      .toUpperCase();
 
     statusMessage = '';
     selectedFriend = null;
@@ -595,6 +802,16 @@
       return;
     }
 
+    if (
+      profile?.trainerCode &&
+      trainerCode === profile.trainerCode
+    ) {
+      statusMessage =
+        'That is your own Trainer Code.';
+      render();
+      return;
+    }
+
     try {
       const snapshot = await db
         .collection('publicProfiles')
@@ -602,20 +819,35 @@
         .get();
 
       if (!snapshot.exists) {
-        statusMessage = 'Trainer code not found.';
+        statusMessage =
+          'Trainer code not found.';
+
         render();
         return;
       }
 
       selectedFriend = snapshot.data();
 
-      await db.collection('users').doc(currentUser.uid).update({
-        friends: firebase.firestore.FieldValue.arrayUnion(trainerCode),
-        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      });
+      await db
+        .collection('users')
+        .doc(currentUser.uid)
+        .update({
+          friends:
+            firebase.firestore.FieldValue.arrayUnion(
+              trainerCode
+            ),
+
+          updatedAt:
+            firebase.firestore.FieldValue.serverTimestamp(),
+        });
 
       render();
     } catch (error) {
+      console.error(
+        'Friend lookup failed:',
+        error
+      );
+
       statusMessage = getErrorText(error);
       render();
     }
@@ -633,26 +865,47 @@
       .collection('users')
       .doc(user.uid)
       .onSnapshot(
+        {
+          includeMetadataChanges: true,
+        },
+
         (snapshot) => {
           if (!snapshot.exists) {
             profile = null;
-            statusMessage = 'Trainer profile document was not created.';
             startupFinished = true;
+
+            statusMessage =
+              'Trainer profile document was not created.';
+
             render();
             return;
           }
 
           profile = snapshot.data();
-          statusMessage = '';
           startupFinished = true;
+
+          /*
+           * Önbellekten gelen belge de uygulamayı açabilir.
+           * Sunucuyla bağlantı kurulunca dinleyici tekrar çalışır.
+           */
+          statusMessage =
+            snapshot.metadata.fromCache &&
+            !navigator.onLine
+              ? 'Offline mode'
+              : '';
+
           render();
         },
+
         (error) => {
-          console.error('Profile listener error:', error);
+          console.error(
+            'Profile listener error:',
+            error
+          );
 
           profile = null;
-          statusMessage = getErrorText(error);
           startupFinished = true;
+          statusMessage = getErrorText(error);
           render();
         }
       );
@@ -661,7 +914,11 @@
   auth
     .getRedirectResult()
     .catch((error) => {
-      console.error('Redirect sign-in error:', error);
+      console.error(
+        'Redirect sign-in error:',
+        error
+      );
+
       statusMessage = getErrorText(error);
     });
 
@@ -688,11 +945,14 @@
     try {
       await startProfileListener(user);
     } catch (error) {
-      console.error('AshDex startup error:', error);
+      console.error(
+        'AshDex startup error:',
+        error
+      );
 
       profile = null;
-      statusMessage = getErrorText(error);
       startupFinished = true;
+      statusMessage = getErrorText(error);
       render();
     }
   });
