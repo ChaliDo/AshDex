@@ -1,32 +1,699 @@
 (() => {
+  'use strict';
+
   const root = document.querySelector('#app');
-  const fail = (message, detail='') => {
-    root.innerHTML = `<main class="login"><img src="assets/ash-pikachu-transparent.png"><h1>AshDex</h1><p>Uygulama başlatılamadı.</p><small>${esc(message)}</small>${detail?`<small>${esc(detail)}</small>`:''}<button onclick="location.reload()">Try again</button></main>`;
+
+  if (!root) {
+    console.error('AshDex: #app element was not found.');
+    return;
+  }
+
+  function escapeHtml(value = '') {
+    return String(value).replace(/[&<>"']/g, (character) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    })[character]);
+  }
+
+  function showFatalError(title, detail = '') {
+    console.error(title, detail);
+
+    root.innerHTML = `
+      <main class="login">
+        <img
+          src="assets/ash-pikachu-transparent.png"
+          alt="Ash and Pikachu"
+        >
+        <h1>AshDex</h1>
+        <p>${escapeHtml(title)}</p>
+        ${detail ? `<small>${escapeHtml(detail)}</small>` : ''}
+        <button id="retry-button" type="button">Try again</button>
+      </main>
+    `;
+
+    document
+      .querySelector('#retry-button')
+      ?.addEventListener('click', () => window.location.reload());
+  }
+
+  window.addEventListener('error', (event) => {
+    showFatalError(
+      'A JavaScript error occurred.',
+      event.message || 'Unknown JavaScript error.'
+    );
+  });
+
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason;
+    showFatalError(
+      'AshDex could not finish starting.',
+      reason?.message || String(reason || 'Unknown startup error.')
+    );
+  });
+
+  if (!window.firebase) {
+    showFatalError(
+      'Firebase libraries could not be loaded.',
+      'Check your internet connection and try again.'
+    );
+    return;
+  }
+
+  if (!Array.isArray(window.POKEMON) || !Array.isArray(window.REGIONS)) {
+    showFatalError(
+      'Pokémon data could not be loaded.',
+      'The data.js file may be missing or invalid.'
+    );
+    return;
+  }
+
+  const firebaseConfig = {
+    apiKey: 'AIzaSyCrjjAQcSA9xI5x9iiqhoi45AT5afhyKJs',
+    authDomain: 'ashdex-chalido.firebaseapp.com',
+    projectId: 'ashdex-chalido',
+    storageBucket: 'ashdex-chalido.firebasestorage.app',
+    messagingSenderId: '753341960916',
+    appId: '1:753341960916:web:49d3a9b509c026f2f7a141',
+    measurementId: 'G-WX6BR0F2T6',
   };
-  window.addEventListener('error', e => fail('JavaScript error', e.message || 'Unknown error'));
-  window.addEventListener('unhandledrejection', e => fail('Startup error', e.reason?.message || String(e.reason || 'Unknown error')));
 
-  function esc(s=''){return String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
-  if (!window.firebase) { fail('Firebase libraries could not be loaded.'); return; }
-  if (!window.POKEMON && typeof POKEMON === 'undefined') { fail('Pokémon data could not be loaded.'); return; }
+  try {
+    if (!firebase.apps.length) {
+      firebase.initializeApp(firebaseConfig);
+    }
+  } catch (error) {
+    showFatalError('Firebase could not be initialized.', error.message);
+    return;
+  }
 
-  const firebaseConfig={apiKey:'AIzaSyCrjjAQcSA9xI5x9iiqhoi45AT5afhyKJs',authDomain:'ashdex-chalido.firebaseapp.com',projectId:'ashdex-chalido',storageBucket:'ashdex-chalido.firebasestorage.app',messagingSenderId:'753341960916',appId:'1:753341960916:web:49d3a9b509c026f2f7a141',measurementId:'G-WX6BR0F2T6'};
-  firebase.initializeApp(firebaseConfig);
-  const auth=firebase.auth(), db=firebase.firestore(), provider=new firebase.auth.GoogleAuthProvider();
-  db.enablePersistence({synchronizeTabs:true}).catch(()=>{});
+  const auth = firebase.auth();
+  const db = firebase.firestore();
+  const provider = new firebase.auth.GoogleAuthProvider();
 
-  let user=null,profile=null,unsubscribe=null,region='All',query='',friend=null,status='';
-  const emptyOwned=()=>Object.fromEntries(POKEMON.map(p=>[p.id,false]));
-  const codeFromUid=uid=>'ASH-'+uid.replace(/[^a-z0-9]/gi,'').slice(0,6).toUpperCase();
-  async function ensureUser(u){const ref=db.collection('users').doc(u.uid),snap=await ref.get();if(!snap.exists){const trainerCode=codeFromUid(u.uid),data={displayName:u.displayName||'Trainer',photoURL:u.photoURL||'',trainerCode,owned:emptyOwned(),friends:[],createdAt:firebase.firestore.FieldValue.serverTimestamp(),updatedAt:firebase.firestore.FieldValue.serverTimestamp()};await ref.set(data);await db.collection('publicProfiles').doc(trainerCode).set({...data,uid:u.uid});}}
-  function render(){if(!user){root.innerHTML=`<main class="login"><img src="assets/ash-pikachu-transparent.png"><h1>AshDex</h1><p>Cloud-synced collection and live friend lookup.</p><button id="login">Continue with Google</button><small>${esc(status)}</small></main>`;document.querySelector('#login').onclick=login;return}if(!profile){root.innerHTML='<div class="loading">Opening your Trainer Card…</div>';return}const owned=profile.owned||emptyOwned(),count=Object.values(owned).filter(Boolean).length,filtered=POKEMON.filter(p=>(region==='All'||p.region===region)&&p.name.toLowerCase().includes(query.toLowerCase()));root.innerHTML=`<div class="app"><header><div><h1>AshDex</h1><p>${count}/${POKEMON.length} collected · ${Math.round(count/POKEMON.length*100)}%</p></div><button id="logout" class="ghost">Sign out</button></header><section class="trainer"><img src="${esc(profile.photoURL||'assets/icon-192.png')}"><div><b>${esc(profile.displayName)}</b><span>Trainer Code: <strong>${esc(profile.trainerCode)}</strong></span></div></section><section class="friends"><h2>Live Friend Lookup</h2><div class="friendAdd"><input id="friendCode" value="" placeholder="ASH-ABC123"><button id="findFriend">Check</button></div>${status?`<p>${esc(status)}</p>`:''}${friend?friendHtml(friend):''}</section><nav class="regions">${REGIONS.map(r=>`<button data-region="${esc(r)}" class="${r===region?'active':''}">${esc(r)}</button>`).join('')}</nav><input id="search" class="search" value="${esc(query)}" placeholder="Search Pokémon…"><main class="grid">${filtered.map(p=>cardHtml(p,owned[p.id])).join('')}</main></div>`;bind();}
-  function cardHtml(p,isOwned){return `<article class="card ${isOwned?'owned':''}" data-id="${esc(p.id)}"><div class="check">${isOwned?'✓':''}</div><img src="assets/pokemon/${encodeURI(p.image)}" loading="lazy"><small>#${p.dex} · ${esc(p.region)}</small><h3>${esc(p.name)}</h3>${p.kind||p.note?`<span>${esc(p.kind||p.note)}</span>`:''}</article>`}
-  function friendHtml(f){const n=Object.values(f.owned||{}).filter(Boolean).length;return `<div class="friendCard"><img src="${esc(f.photoURL||'assets/icon-192.png')}"><div><b>${esc(f.displayName)}</b><span>${n}/${POKEMON.length} · ${Math.round(n/POKEMON.length*100)}%</span></div></div>`}
-  function bind(){document.querySelector('#logout').onclick=()=>auth.signOut();document.querySelector('#search').oninput=e=>{query=e.target.value;render()};document.querySelectorAll('[data-region]').forEach(b=>b.onclick=()=>{region=b.dataset.region;render()});document.querySelectorAll('[data-id]').forEach(c=>c.onclick=()=>toggle(c.dataset.id));document.querySelector('#findFriend').onclick=()=>findFriend(document.querySelector('#friendCode').value);}
-  async function login(){status='';try{await auth.signInWithPopup(provider)}catch(e){if(['auth/popup-blocked','auth/cancelled-popup-request','auth/operation-not-supported-in-this-environment'].includes(e.code))await auth.signInWithRedirect(provider);else{status=e.message;render()}}}
-  async function toggle(id){const next={...(profile.owned||emptyOwned()),[id]:!(profile.owned||{})[id]};await db.collection('users').doc(user.uid).update({owned:next,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});await db.collection('publicProfiles').doc(profile.trainerCode).update({owned:next,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});}
-  async function findFriend(value){status='';friend=null;const code=value.trim().toUpperCase();if(!code){status='Enter a Trainer Code.';render();return}const snap=await db.collection('publicProfiles').doc(code).get();if(!snap.exists){status='Trainer code not found.';render();return}friend=snap.data();await db.collection('users').doc(user.uid).update({friends:firebase.firestore.FieldValue.arrayUnion(code)});render();}
+  provider.setCustomParameters({
+    prompt: 'select_account',
+  });
 
-  auth.getRedirectResult().catch(()=>{});
-  auth.onAuthStateChanged(async u=>{user=u;profile=null;if(unsubscribe){unsubscribe();unsubscribe=null}if(u){try{await ensureUser(u);unsubscribe=db.collection('users').doc(u.uid).onSnapshot(s=>{profile=s.data();render()},e=>{status=e.message;render()})}catch(e){status=e.message;render()}}else render()});
+  db.enablePersistence({ synchronizeTabs: true }).catch((error) => {
+    console.warn('Firestore persistence unavailable:', error.code, error.message);
+  });
+
+  let currentUser = null;
+  let profile = null;
+  let unsubscribeProfile = null;
+  let selectedRegion = 'All';
+  let searchQuery = '';
+  let selectedFriend = null;
+  let statusMessage = '';
+  let startupFinished = false;
+
+  function createEmptyOwned() {
+    return Object.fromEntries(
+      window.POKEMON.map((pokemon) => [pokemon.id, false])
+    );
+  }
+
+  function trainerCodeFromUid(uid) {
+    const cleanUid = uid
+      .replace(/[^a-z0-9]/gi, '')
+      .slice(0, 6)
+      .toUpperCase();
+
+    return `ASH-${cleanUid}`;
+  }
+
+  function getErrorText(error) {
+    if (!error) {
+      return 'Unknown error.';
+    }
+
+    const code = error.code ? `${error.code}: ` : '';
+    const message = error.message || String(error);
+
+    return `${code}${message}`;
+  }
+
+  function countOwned(owned = {}) {
+    return window.POKEMON.reduce(
+      (total, pokemon) => total + (owned[pokemon.id] ? 1 : 0),
+      0
+    );
+  }
+
+  async function ensureUserDocument(user) {
+    const userRef = db.collection('users').doc(user.uid);
+    const snapshot = await userRef.get();
+
+    if (snapshot.exists) {
+      const currentData = snapshot.data() || {};
+      const mergedOwned = {
+        ...createEmptyOwned(),
+        ...(currentData.owned || {}),
+      };
+
+      await userRef.set(
+        {
+          displayName: currentData.displayName || user.displayName || 'Trainer',
+          photoURL: currentData.photoURL || user.photoURL || '',
+          email: user.email || currentData.email || '',
+          trainerCode:
+            currentData.trainerCode || trainerCodeFromUid(user.uid),
+          owned: mergedOwned,
+          friends: Array.isArray(currentData.friends)
+            ? currentData.friends
+            : [],
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      return;
+    }
+
+    const trainerCode = trainerCodeFromUid(user.uid);
+
+    const newProfile = {
+      uid: user.uid,
+      displayName: user.displayName || 'Trainer',
+      photoURL: user.photoURL || '',
+      email: user.email || '',
+      trainerCode,
+      owned: createEmptyOwned(),
+      friends: [],
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    };
+
+    await userRef.set(newProfile);
+
+    await db
+      .collection('publicProfiles')
+      .doc(trainerCode)
+      .set({
+        uid: user.uid,
+        displayName: newProfile.displayName,
+        photoURL: newProfile.photoURL,
+        trainerCode,
+        owned: newProfile.owned,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+  }
+
+  function renderLogin() {
+    root.innerHTML = `
+      <main class="login">
+        <img
+          src="assets/ash-pikachu-transparent.png"
+          alt="Ash and Pikachu"
+        >
+        <h1>AshDex</h1>
+        <p>Cloud-synced collection and live friend lookup.</p>
+
+        <button id="login-button" type="button">
+          Continue with Google
+        </button>
+
+        ${
+          statusMessage
+            ? `<small class="status-message">${escapeHtml(statusMessage)}</small>`
+            : ''
+        }
+      </main>
+    `;
+
+    document
+      .querySelector('#login-button')
+      ?.addEventListener('click', loginWithGoogle);
+  }
+
+  function renderLoading() {
+    root.innerHTML = `
+      <main class="login">
+        <img
+          src="assets/ash-pikachu-transparent.png"
+          alt="Ash and Pikachu"
+        >
+        <h1>AshDex</h1>
+        <p>Opening your Trainer Card…</p>
+
+        ${
+          statusMessage
+            ? `
+              <small class="status-message">
+                ${escapeHtml(statusMessage)}
+              </small>
+              <button id="retry-button" type="button">Try again</button>
+            `
+            : ''
+        }
+      </main>
+    `;
+
+    document
+      .querySelector('#retry-button')
+      ?.addEventListener('click', () => window.location.reload());
+  }
+
+  function pokemonCardHtml(pokemon, isOwned) {
+    const label = pokemon.kind || pokemon.note || '';
+
+    return `
+      <article
+        class="card ${isOwned ? 'owned' : ''}"
+        data-pokemon-id="${escapeHtml(pokemon.id)}"
+        tabindex="0"
+        role="button"
+        aria-pressed="${isOwned ? 'true' : 'false'}"
+      >
+        <div class="check">${isOwned ? '✓' : ''}</div>
+
+        <img
+          src="assets/pokemon/${encodeURI(pokemon.image)}"
+          alt="${escapeHtml(pokemon.name)}"
+          loading="lazy"
+        >
+
+        <small>
+          #${escapeHtml(pokemon.dex)} · ${escapeHtml(pokemon.region)}
+        </small>
+
+        <h3>${escapeHtml(pokemon.name)}</h3>
+
+        ${label ? `<span>${escapeHtml(label)}</span>` : ''}
+      </article>
+    `;
+  }
+
+  function friendHtml(friendProfile) {
+    const ownedCount = countOwned(friendProfile.owned || {});
+    const percentage = Math.round(
+      (ownedCount / window.POKEMON.length) * 100
+    );
+
+    return `
+      <div class="friendCard">
+        <img
+          src="${escapeHtml(
+            friendProfile.photoURL || 'assets/icon-192.png'
+          )}"
+          alt="${escapeHtml(friendProfile.displayName || 'Trainer')}"
+        >
+
+        <div>
+          <b>${escapeHtml(friendProfile.displayName || 'Trainer')}</b>
+          <span>
+            ${ownedCount}/${window.POKEMON.length} · ${percentage}%
+          </span>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderApp() {
+    const owned = {
+      ...createEmptyOwned(),
+      ...(profile.owned || {}),
+    };
+
+    const ownedCount = countOwned(owned);
+    const percentage = Math.round(
+      (ownedCount / window.POKEMON.length) * 100
+    );
+
+    const filteredPokemon = window.POKEMON.filter((pokemon) => {
+      const matchesRegion =
+        selectedRegion === 'All' || pokemon.region === selectedRegion;
+
+      const matchesSearch = pokemon.name
+        .toLowerCase()
+        .includes(searchQuery.trim().toLowerCase());
+
+      return matchesRegion && matchesSearch;
+    });
+
+    root.innerHTML = `
+      <div class="app">
+        <header>
+          <div>
+            <h1>AshDex</h1>
+            <p>
+              ${ownedCount}/${window.POKEMON.length} collected ·
+              ${percentage}%
+            </p>
+          </div>
+
+          <button id="logout-button" class="ghost" type="button">
+            Sign out
+          </button>
+        </header>
+
+        <section class="trainer">
+          <img
+            src="${escapeHtml(
+              profile.photoURL || 'assets/icon-192.png'
+            )}"
+            alt="${escapeHtml(profile.displayName || 'Trainer')}"
+          >
+
+          <div>
+            <b>${escapeHtml(profile.displayName || 'Trainer')}</b>
+            <span>
+              Trainer Code:
+              <strong>${escapeHtml(profile.trainerCode || '')}</strong>
+            </span>
+          </div>
+        </section>
+
+        <section class="friends">
+          <h2>Live Friend Lookup</h2>
+
+          <div class="friendAdd">
+            <input
+              id="friend-code-input"
+              type="text"
+              placeholder="ASH-ABC123"
+              autocomplete="off"
+            >
+
+            <button id="find-friend-button" type="button">
+              Check
+            </button>
+          </div>
+
+          ${
+            statusMessage
+              ? `<p class="status-message">${escapeHtml(statusMessage)}</p>`
+              : ''
+          }
+
+          ${selectedFriend ? friendHtml(selectedFriend) : ''}
+        </section>
+
+        <nav class="regions">
+          ${window.REGIONS.map((regionName) => `
+            <button
+              type="button"
+              data-region="${escapeHtml(regionName)}"
+              class="${regionName === selectedRegion ? 'active' : ''}"
+            >
+              ${escapeHtml(regionName)}
+            </button>
+          `).join('')}
+        </nav>
+
+        <input
+          id="pokemon-search"
+          class="search"
+          type="search"
+          value="${escapeHtml(searchQuery)}"
+          placeholder="Search Pokémon…"
+        >
+
+        <main class="grid">
+          ${filteredPokemon
+            .map((pokemon) =>
+              pokemonCardHtml(pokemon, Boolean(owned[pokemon.id]))
+            )
+            .join('')}
+        </main>
+      </div>
+    `;
+
+    bindAppEvents();
+  }
+
+  function render() {
+    if (!startupFinished) {
+      renderLoading();
+      return;
+    }
+
+    if (!currentUser) {
+      renderLogin();
+      return;
+    }
+
+    if (!profile) {
+      renderLoading();
+      return;
+    }
+
+    renderApp();
+  }
+
+  function bindAppEvents() {
+    document
+      .querySelector('#logout-button')
+      ?.addEventListener('click', async () => {
+        statusMessage = '';
+
+        try {
+          await auth.signOut();
+        } catch (error) {
+          statusMessage = getErrorText(error);
+          render();
+        }
+      });
+
+    document
+      .querySelector('#pokemon-search')
+      ?.addEventListener('input', (event) => {
+        searchQuery = event.target.value;
+        render();
+      });
+
+    document.querySelectorAll('[data-region]').forEach((button) => {
+      button.addEventListener('click', () => {
+        selectedRegion = button.dataset.region;
+        render();
+      });
+    });
+
+    document.querySelectorAll('[data-pokemon-id]').forEach((card) => {
+      const toggleCard = () => togglePokemon(card.dataset.pokemonId);
+
+      card.addEventListener('click', toggleCard);
+
+      card.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          toggleCard();
+        }
+      });
+    });
+
+    document
+      .querySelector('#find-friend-button')
+      ?.addEventListener('click', () => {
+        const value =
+          document.querySelector('#friend-code-input')?.value || '';
+
+        findFriend(value);
+      });
+  }
+
+  async function loginWithGoogle() {
+    statusMessage = '';
+    render();
+
+    try {
+      await auth.signInWithPopup(provider);
+    } catch (error) {
+      const redirectErrors = [
+        'auth/popup-blocked',
+        'auth/cancelled-popup-request',
+        'auth/operation-not-supported-in-this-environment',
+      ];
+
+      if (redirectErrors.includes(error.code)) {
+        try {
+          await auth.signInWithRedirect(provider);
+        } catch (redirectError) {
+          statusMessage = getErrorText(redirectError);
+          startupFinished = true;
+          render();
+        }
+
+        return;
+      }
+
+      statusMessage = getErrorText(error);
+      startupFinished = true;
+      render();
+    }
+  }
+
+  async function togglePokemon(pokemonId) {
+    if (!currentUser || !profile) {
+      return;
+    }
+
+    const owned = {
+      ...createEmptyOwned(),
+      ...(profile.owned || {}),
+    };
+
+    const nextOwned = {
+      ...owned,
+      [pokemonId]: !owned[pokemonId],
+    };
+
+    const previousProfile = profile;
+
+    profile = {
+      ...profile,
+      owned: nextOwned,
+    };
+
+    statusMessage = '';
+    render();
+
+    try {
+      const userRef = db.collection('users').doc(currentUser.uid);
+
+      await userRef.update({
+        owned: nextOwned,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+
+      if (profile.trainerCode) {
+        await db
+          .collection('publicProfiles')
+          .doc(profile.trainerCode)
+          .set(
+            {
+              uid: currentUser.uid,
+              displayName: profile.displayName || 'Trainer',
+              photoURL: profile.photoURL || '',
+              trainerCode: profile.trainerCode,
+              owned: nextOwned,
+              updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+      }
+    } catch (error) {
+      profile = previousProfile;
+      statusMessage = getErrorText(error);
+      render();
+    }
+  }
+
+  async function findFriend(rawCode) {
+    const trainerCode = rawCode.trim().toUpperCase();
+
+    statusMessage = '';
+    selectedFriend = null;
+    render();
+
+    if (!trainerCode) {
+      statusMessage = 'Enter a Trainer Code.';
+      render();
+      return;
+    }
+
+    try {
+      const snapshot = await db
+        .collection('publicProfiles')
+        .doc(trainerCode)
+        .get();
+
+      if (!snapshot.exists) {
+        statusMessage = 'Trainer code not found.';
+        render();
+        return;
+      }
+
+      selectedFriend = snapshot.data();
+
+      await db.collection('users').doc(currentUser.uid).update({
+        friends: firebase.firestore.FieldValue.arrayUnion(trainerCode),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+
+      render();
+    } catch (error) {
+      statusMessage = getErrorText(error);
+      render();
+    }
+  }
+
+  async function startProfileListener(user) {
+    if (unsubscribeProfile) {
+      unsubscribeProfile();
+      unsubscribeProfile = null;
+    }
+
+    await ensureUserDocument(user);
+
+    unsubscribeProfile = db
+      .collection('users')
+      .doc(user.uid)
+      .onSnapshot(
+        (snapshot) => {
+          if (!snapshot.exists) {
+            profile = null;
+            statusMessage = 'Trainer profile document was not created.';
+            startupFinished = true;
+            render();
+            return;
+          }
+
+          profile = snapshot.data();
+          statusMessage = '';
+          startupFinished = true;
+          render();
+        },
+        (error) => {
+          console.error('Profile listener error:', error);
+
+          profile = null;
+          statusMessage = getErrorText(error);
+          startupFinished = true;
+          render();
+        }
+      );
+  }
+
+  auth
+    .getRedirectResult()
+    .catch((error) => {
+      console.error('Redirect sign-in error:', error);
+      statusMessage = getErrorText(error);
+    });
+
+  auth.onAuthStateChanged(async (user) => {
+    currentUser = user;
+    profile = null;
+    selectedFriend = null;
+    statusMessage = '';
+
+    if (unsubscribeProfile) {
+      unsubscribeProfile();
+      unsubscribeProfile = null;
+    }
+
+    if (!user) {
+      startupFinished = true;
+      render();
+      return;
+    }
+
+    startupFinished = false;
+    render();
+
+    try {
+      await startProfileListener(user);
+    } catch (error) {
+      console.error('AshDex startup error:', error);
+
+      profile = null;
+      statusMessage = getErrorText(error);
+      startupFinished = true;
+      render();
+    }
+  });
 })();
