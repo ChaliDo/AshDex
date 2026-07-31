@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#d92f3c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="AshDex">
+  <title>AshDex · by ChaliDo</title>
+  <link rel="icon" href="assets/favicon.png">
+  <link rel="apple-touch-icon" href="assets/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app"><div class="loading" id="boot-status">Opening AshDex…</div></div>
+  <script>
+    window.ashdexScriptError = function(name) {
+      var root = document.getElementById('app');
+      if (root) root.innerHTML = '<main class="login"><img src="assets/ash-pikachu-transparent.png"><h1>AshDex</h1><p>Startup file could not be loaded.</p><small>' + name + '</small><button onclick="location.reload()">Try again</button></main>';
+    };
+  </script>
+  <script src="data.js" onerror="ashdexScriptError('data.js')"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js" onerror="ashdexScriptError('firebase-app')"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js" onerror="ashdexScriptError('firebase-auth')"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js" onerror="ashdexScriptError('firebase-firestore')"></script>
+  <script src="app.js" onerror="ashdexScriptError('app.js')"></script>
+</body>
+</html>
